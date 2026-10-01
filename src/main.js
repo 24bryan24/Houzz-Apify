@@ -195,12 +195,14 @@ async function loginWithCredentials(page) {
         );
     }
     log.info('Logging in with email + password…');
-    await page.goto(`${HOUZZ_BASE_URL}/login`, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await sleep(2500);
-    if (await detectChallenge(page)) throw challengeError('on the login page');
-    log.info(`Login page loaded: ${page.url()} — "${await page.title().catch(() => '')}"`);
+    // Reach the login form via the site's own Sign In link: Houzz serves the
+    // form from a /houzz-login/... address that carries session tokens, so we
+    // let the site generate the URL instead of guessing it.
+    await page.goto(HOUZZ_BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await sleep(2000);
+    if (await detectChallenge(page)) throw challengeError('on the Houzz homepage');
 
-    // Dismiss cookie-consent banners that can cover the form.
+    // Dismiss cookie-consent banners that can cover the controls.
     for (const name of [/accept all/i, /^accept$/i, /agree/i, /got it/i]) {
         const btn = page.getByRole('button', { name }).first();
         if ((await btn.count()) > 0) {
@@ -208,6 +210,26 @@ async function loginWithCredentials(page) {
             await sleep(1000);
         }
     }
+
+    const signInLink = page
+        .getByRole('link', { name: /^sign in$/i })
+        .or(page.getByRole('button', { name: /^sign in$/i }))
+        .first();
+    if ((await signInLink.count()) > 0) {
+        log.info('Opening the Sign In page…');
+        await signInLink.click();
+        await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+        await sleep(2500);
+    } else {
+        log.warning('No Sign In link found on the homepage; trying the login URL directly.');
+        await page.goto(
+            'https://www.houzz.com/houzz-login/u=aHR0cHM6Ly93d3cuaG91enouY29tLw=/t=81/s=aG9tZQ=',
+            { waitUntil: 'domcontentloaded', timeout: 60000 },
+        );
+        await sleep(2500);
+    }
+    if (await detectChallenge(page)) throw challengeError('on the login page');
+    log.info(`Login page loaded: ${page.url()} — "${await page.title().catch(() => '')}"`);
 
     const emailField = page
         .getByLabel(/email/i)
