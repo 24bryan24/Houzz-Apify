@@ -552,7 +552,19 @@ log.info(
     `dryRun=${Boolean(input.dryRun)}.`,
 );
 
-const browser = await chromium.launch({ headless: input.headless !== false });
+let proxyServer;
+const proxyGroups = Array.isArray(input.proxyGroups) ? input.proxyGroups.filter(Boolean) : [];
+if (proxyGroups.length > 0) {
+    log.info(`Creating Apify Proxy configuration (groups: ${proxyGroups.join(', ')})…`);
+    const proxyConfiguration = await Actor.createProxyConfiguration({ groups: proxyGroups });
+    proxyServer = await proxyConfiguration.newUrl();
+    log.info('Browser traffic will be routed through Apify Proxy.');
+}
+
+const browser = await chromium.launch({
+    headless: input.headless !== false,
+    ...(proxyServer ? { proxy: { server: proxyServer } } : {}),
+});
 const context = await browser.newContext({
     viewport: { width: 1366, height: 900 },
     locale: 'en-US',
