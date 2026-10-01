@@ -195,41 +195,18 @@ async function loginWithCredentials(page) {
         );
     }
     log.info('Logging in with email + password…');
-    // Reach the login form via the site's own Sign In link: Houzz serves the
-    // form from a /houzz-login/... address that carries session tokens, so we
-    // let the site generate the URL instead of guessing it.
-    await page.goto(HOUZZ_BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await sleep(2000);
-    if (await detectChallenge(page)) throw challengeError('on the Houzz homepage');
 
-    // Dismiss cookie-consent banners that can cover the controls.
-    for (const name of [/accept all/i, /^accept$/i, /agree/i, /got it/i]) {
-        const btn = page.getByRole('button', { name }).first();
-        if ((await btn.count()) > 0) {
-            await btn.click().catch(() => {});
-            await sleep(1000);
-        }
-    }
-
-    const signInLink = page
-        .getByRole('link', { name: /^sign in$/i })
-        .or(page.getByRole('button', { name: /^sign in$/i }))
-        .first();
-    if ((await signInLink.count()) > 0) {
-        log.info('Opening the Sign In page…');
-        await signInLink.click();
-        await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
-        await sleep(2500);
-    } else {
-        log.warning('No Sign In link found on the homepage; trying the login URL directly.');
-        await page.goto(
-            'https://www.houzz.com/houzz-login/u=aHR0cHM6Ly93d3cuaG91enouY29tLw=/t=81/s=aG9tZQ=',
-            { waitUntil: 'domcontentloaded', timeout: 60000 },
-        );
-        await sleep(2500);
-    }
-    if (await detectChallenge(page)) throw challengeError('on the login page');
-    log.info(`Login page loaded: ${page.url()} — "${await page.title().catch(() => '')}"`);
+    // Houzz serves the form from a /houzz-login/... address. Try it directly
+    // first; fall back to the homepage's Sign In link so the site can generate
+    // a fresh login URL. A hung, blocked, or challenged request is never fatal —
+    // we just try the next route.
+    const loginRoutes = [
+        {
+            label: 'login page directly',
+            url: 'https://www.houzz.com/houzz-login/u=aHR0cHM6Ly93d3cuaG91enouY29tLw=/t=81/s=aG9tZQ=',
+        },
+        { label: 'homepage Sign In link', url: HOUZZ_BASE_URL, clickSignIn: true },
+    ];
 
     const emailField = page
         .getByLabel(/email/i)
@@ -241,40 +218,97 @@ async function loginWithCredentials(page) {
         )
         .first();
 
-    // Some login pages show social buttons first; reveal the email form if needed.
-    if ((await emailField.count()) === 0) {
-        const reveal = page
-            .getByRole('button', {
-                name: /continue with email|log in with email|sign in with email|use email/i,
-            })
-            .or(
-                page.getByRole('link', {
-                    name: /continue with email|log in with email|sign in with email/i,
-                }),
-            )
-            .first();
-        if ((await reveal.count()) > 0) {
-            log.info('Revealing the email login form…');
-            await reveal.click();
-            await sleep(2000);
+    const dismissBanners = async () => {
+        for (const name of [/accept all/i, /^accept$/i, /agree/i, /got it/i]) {
+            const btn = page.getByRole('button', { name }).first();
+            if ((await btn.count()) > 0) {
+                await btn.click().catch(() => {});
+                await sleep(1000);
+            }
         }
+    };
+
+    let emailVisible = false;
+    for (const route of loginRoutes) {
+        log.info(`Trying ${route.label}…`);
+        try {
+            await page.goto(route.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        } catch (e) {
+            log.warning(`Could not load ${route.label}: ${String(e.message).split('\n')[0]}`);
+            continue;
+        }
+        await sleep(2000);
+        if (await detectChallenge(page)) {
+            log.warning(`Verification challenge on ${route.label}; trying next route.`);
+            continue;
+        }
+        const routeTitle = await page.title().catch(() => '');
+        if (/403|not allowed|access denied/i.test(routeTitle)) {
+            log.warning(`Access blocked on ${route.label} ("${routeTitle}"); trying next route.`);
+            continue;
+        }
+
+        await dismissBanners();
+
+        if (route.clickSignIn) {
+            const signInLink = page
+                .getByRole('link', { name: /^sign in$/i })
+                .or(page.getByRole('button', { name: /^sign in$/i }))
+                .first();
+            if ((await signInLink.count()) > 0) {
+                log.info('Opening the Sign In page…');
+                await signInLink.click();
+                await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+                await sleep(2500);
+                if (await detectChallenge(page)) {
+                    log.warning('Verification challenge after Sign In click; trying next route.');
+                    continue;
+                }
+                await dismissBanners();
+            } else {
+                log.warning('No Sign In link found on the homepage.');
+            }
+        }
+
+        // Some login pages show social buttons first; reveal the email form if needed.
+        if ((await emailField.count()) === 0) {
+            const reveal = page
+                .getByRole('button', {
+                    name: /continue with email|log in with email|sign in with email|use email/i,
+                })
+                .or(
+                    page.getByRole('link', {
+                        name: /continue with email|log in with email|sign in with email/i,
+                    }),
+                )
+                .first();
+            if ((await reveal.count()) > 0) {
+                log.info('Revealing the email login form…');
+                await reveal.click();
+                await sleep(2000);
+            }
+        }
+
+        if ((await emailField.count()) > 0) {
+            emailVisible = true;
+            break;
+        }
+        log.warning(`No email field on ${route.label}; trying next route.`);
     }
 
-    try {
-        await emailField.waitFor({ timeout: 25000 });
-    } catch {
+    if (!emailVisible) {
         await saveDebugScreenshot(page, 'login-failed.png');
         const title = await page.title().catch(() => '');
         const bodyText = await page.locator('body').innerText({ timeout: 8000 }).catch(() => '');
-        log.error(`Login page did not show an email field. URL: ${page.url()} | Title: "${title}"`);
+        log.error(`No login form found. Last URL: ${page.url()} | Title: "${title}"`);
         log.error(`Visible text (first 500 chars): ${bodyText.slice(0, 500).replace(/\s+/g, ' ')}`);
         throw new Error(
-            'Could not find the email field on the Houzz login page. A screenshot was saved ' +
-            'as "login-failed.png" in the run\'s key-value store — open it to see what the ' +
-            'page actually showed. If it is a verification challenge, switch to "cookies" ' +
-            'auth mode instead.',
+            'Could not find the email field on any Houzz login route. A screenshot was saved ' +
+            'as "login-failed.png" in the run\'s key-value store. If Houzz is blocking this ' +
+            'network path, switch to "cookies" auth mode with a session exported from your browser.',
         );
     }
+    log.info(`Login form found: ${page.url()}`);
     await emailField.fill(email);
 
     const passwordField = page
