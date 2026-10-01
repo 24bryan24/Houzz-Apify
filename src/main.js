@@ -196,20 +196,75 @@ async function loginWithCredentials(page) {
     }
     log.info('Logging in with email + password…');
     await page.goto(`${HOUZZ_BASE_URL}/login`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await sleep(2500);
     if (await detectChallenge(page)) throw challengeError('on the login page');
+    log.info(`Login page loaded: ${page.url()} — "${await page.title().catch(() => '')}"`);
+
+    // Dismiss cookie-consent banners that can cover the form.
+    for (const name of [/accept all/i, /^accept$/i, /agree/i, /got it/i]) {
+        const btn = page.getByRole('button', { name }).first();
+        if ((await btn.count()) > 0) {
+            await btn.click().catch(() => {});
+            await sleep(1000);
+        }
+    }
 
     const emailField = page
         .getByLabel(/email/i)
-        .or(page.locator('input[type="email"], input[name*="email" i], input[id*="email" i]'))
+        .or(page.locator('input[type="email"]'))
+        .or(
+            page.locator(
+                'input[name*="email" i], input[id*="email" i], input[placeholder*="email" i]',
+            ),
+        )
         .first();
-    await emailField.waitFor({ timeout: 20000 });
+
+    // Some login pages show social buttons first; reveal the email form if needed.
+    if ((await emailField.count()) === 0) {
+        const reveal = page
+            .getByRole('button', {
+                name: /continue with email|log in with email|sign in with email|use email/i,
+            })
+            .or(
+                page.getByRole('link', {
+                    name: /continue with email|log in with email|sign in with email/i,
+                }),
+            )
+            .first();
+        if ((await reveal.count()) > 0) {
+            log.info('Revealing the email login form…');
+            await reveal.click();
+            await sleep(2000);
+        }
+    }
+
+    try {
+        await emailField.waitFor({ timeout: 25000 });
+    } catch {
+        await saveDebugScreenshot(page, 'login-failed.png');
+        const title = await page.title().catch(() => '');
+        const bodyText = await page.locator('body').innerText({ timeout: 8000 }).catch(() => '');
+        log.error(`Login page did not show an email field. URL: ${page.url()} | Title: "${title}"`);
+        log.error(`Visible text (first 500 chars): ${bodyText.slice(0, 500).replace(/\s+/g, ' ')}`);
+        throw new Error(
+            'Could not find the email field on the Houzz login page. A screenshot was saved ' +
+            'as "login-failed.png" in the run\'s key-value store — open it to see what the ' +
+            'page actually showed. If it is a verification challenge, switch to "cookies" ' +
+            'auth mode instead.',
+        );
+    }
     await emailField.fill(email);
 
-    const passwordField = page.locator('input[type="password"]').first();
+    const passwordField = page
+        .locator('input[type="password"], input[placeholder*="password" i]')
+        .first();
     await passwordField.waitFor({ timeout: 15000 });
     await passwordField.fill(password);
 
-    await page.getByRole('button', { name: /log in|sign in/i }).first().click();
+    const submitBtn = page
+        .getByRole('button', { name: /^log in$/i })
+        .or(page.getByRole('button', { name: /log in|sign in/i }).first());
+    await submitBtn.first().click();
     await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
     await sleep(2500);
 
@@ -217,9 +272,11 @@ async function loginWithCredentials(page) {
     const stillOnLogin =
         page.url().includes('/login') || (await page.locator('input[type="password"]').count()) > 0;
     if (stillOnLogin) {
+        await saveDebugScreenshot(page, 'login-failed.png');
         throw new Error(
-            'Login did not succeed (still on the login page). Check the credentials, ' +
-            'or switch to "cookies" auth mode for a more reliable session.',
+            'Login did not succeed (still on the login page; screenshot saved as ' +
+            '"login-failed.png"). Check the credentials, or switch to "cookies" auth mode ' +
+            'for a more reliable session.',
         );
     }
     log.info('Login succeeded.');
