@@ -359,6 +359,14 @@ async function ensureLoggedIn(page, context, input) {
 
     // Verify the session by opening the Add Project page.
     await page.goto(input.addProjectUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const verifyTitle = await page.title().catch(() => '');
+    if (/403|not allowed|access denied/i.test(verifyTitle)) {
+        throw new Error(
+            'Houzz returned HTTP 403 for the Add Project page from this network. The cookies ' +
+            'may be fine — the server is refusing this IP outright. Run the actor from a ' +
+            'residential IP (e.g. your own computer) or route it through a residential proxy.',
+        );
+    }
     if (await detectChallenge(page)) throw challengeError('while verifying the session');
     const bouncedToLogin =
         page.url().includes('/login') || (await page.locator('input[type="password"]').count()) > 0;
@@ -595,8 +603,28 @@ log.info(
 );
 
 let proxyServer;
+// Custom static proxy (e.g. a static residential IP from a proxy provider).
+// Prefer the CUSTOM_PROXY_URL secret env var so credentials never land in the
+// input JSON; `proxyUrls` in the input works too. Takes precedence over proxyGroups.
+const customProxyUrls = [
+    ...(process.env.CUSTOM_PROXY_URL ? [process.env.CUSTOM_PROXY_URL.trim()] : []),
+    ...(Array.isArray(input.proxyUrls) ? input.proxyUrls.filter(Boolean) : []),
+].filter(Boolean);
 const proxyGroups = Array.isArray(input.proxyGroups) ? input.proxyGroups.filter(Boolean) : [];
-if (proxyGroups.length > 0) {
+if (customProxyUrls.length > 0) {
+    if (customProxyUrls.length === 1) {
+        // Single static proxy: use the URL exactly as given (credentials inline,
+        // e.g. http://user:pass@host:port) — no Apify session juggling.
+        proxyServer = customProxyUrls[0];
+        log.info('Browser traffic will be routed through the custom static proxy.');
+    } else {
+        const proxyConfiguration = await Actor.createProxyConfiguration({
+            proxyUrls: customProxyUrls,
+        });
+        proxyServer = await proxyConfiguration.newUrl();
+        log.info('Browser traffic will be routed through the custom proxy URLs.');
+    }
+} else if (proxyGroups.length > 0) {
     log.info(`Creating Apify Proxy configuration (groups: ${proxyGroups.join(', ')})…`);
     const proxyConfiguration = await Actor.createProxyConfiguration({ groups: proxyGroups });
     proxyServer = await proxyConfiguration.newUrl();
