@@ -390,78 +390,59 @@ async function ensureLoggedIn(page, context, input) {
 // ---------------------------------------------------------------------------
 
 async function fillProjectDetails(page, project) {
-    // Project title / name
-    const titleField = page
-        .getByLabel(/project name|project title|^title$/i)
-        .or(page.locator('input[name*="title" i], input[placeholder*="project name" i]'))
-        .first();
-    await titleField.waitFor({ timeout: 20000 });
-    await titleField.fill(project.title);
+    // Calibrated 2026-10-01 against the live "Upload Content to a Project" page.
+    // The form starts with a project picker; choosing "Create a new project"
+    // reveals the name field and the rest of the details (display:none until then).
+    const projectSelect = page.locator('#projectSelect');
+    await projectSelect.waitFor({ timeout: 20000 });
+    await projectSelect.selectOption('NewProject');
+    await page.locator('#newProjectNameFldRow').waitFor({ state: 'visible', timeout: 15000 });
+    log.info('Selected "Create a new project".');
+
+    // Project name (mandatory, 80 chars max on Houzz).
+    await page.locator('#newProjectNameFld').fill(String(project.title).slice(0, 80));
     log.info('Filled project title.');
 
-    // Location: free-text `location` wins (e.g. a zip code); otherwise join city + state.
+    // Project address: free-text `location` wins, otherwise city + state.
+    // (The hidden geo fields only populate via the autocomplete dropdown, so
+    // typed text is best-effort.)
     const locationText = (project.location && String(project.location).trim())
         || [project.city, project.state].filter(Boolean).join(', ');
     if (locationText) {
-        const locationField = page
-            .getByLabel(/project address|location|city/i)
-            .or(page.locator('input[placeholder*="Project Address" i], input[name*="city" i], input[name*="location" i], input[name*="zip" i]'))
-            .first();
-        if ((await locationField.count()) > 0) {
-            await locationField.fill(locationText);
-            log.info(`Filled location: ${locationText}.`);
-        } else {
-            log.warning('No location field found; skipping location.');
-        }
+        await page.locator('#input-project-address').fill(locationText);
+        log.info(`Filled project address: ${locationText}.`);
     }
 
-    // Description
-    if (project.description) {
-        const descriptionField = page
-            .getByLabel(/description|about this project|project details/i)
-            .or(page.locator('textarea[name*="descript" i], textarea'))
-            .first();
-        if ((await descriptionField.count()) > 0) {
-            await descriptionField.fill(project.description);
-            log.info('Filled project description.');
-        } else {
-            log.warning('No description field found; skipping description.');
-        }
-    }
-
-    // Project Year (Houzz "Upload Content to a Project" form has a Year dropdown)
+    // Project year dropdown (option labels are the years; "Pre-2005" covers older).
     if (project.year) {
-        const yearStr = String(project.year).trim();
-        const yearField = page.getByLabel(/project year/i).first();
-        if ((await yearField.count()) > 0 && /^\d{4}$/.test(yearStr)) {
-            let set = false;
-            for (const option of [{ label: yearStr }, yearStr]) {
-                try {
-                    await yearField.selectOption(option);
-                    set = true;
-                    break;
-                } catch {
-                    /* try the next form */
-                }
-            }
-            if (set) log.info(`Set project year: ${yearStr}.`);
-            else log.warning(`Could not set project year to ${yearStr}; leaving default.`);
+        const yearNum = parseInt(String(project.year), 10);
+        const label = Number.isFinite(yearNum) && yearNum < 2005
+            ? 'Pre-2005'
+            : String(project.year).trim();
+        try {
+            await page.locator('#select-project-year').selectOption({ label });
+            log.info(`Set project year: ${label}.`);
+        } catch {
+            log.warning(`Could not set project year to ${label}; leaving default.`);
         }
     }
 
-    // Keywords (comma-separated, 300 chars max on Houzz)
+    // Keywords (comma-separated).
     if (project.keywords) {
-        const keywordsField = page
-            .getByLabel(/keywords/i)
-            .or(page.locator('textarea[placeholder*="keyword" i]'))
-            .first();
-        if ((await keywordsField.count()) > 0) {
-            await keywordsField.fill(String(project.keywords).slice(0, 300));
-            log.info('Filled keywords.');
-        }
+        const kw = Array.isArray(project.keywords)
+            ? project.keywords.join(', ')
+            : String(project.keywords);
+        await page.locator('#keywordsFld').fill(kw.slice(0, 300));
+        log.info('Filled keywords.');
     }
 
-    // Optional per-photo captions, matched by upload order.
+    // The project form has no description field (the only textarea is keywords),
+    // so description is accepted in the input but cannot be placed.
+    if (project.description) {
+        log.warning('The Houzz project form has no description field; description not placed.');
+    }
+
+    // Optional per-photo captions, matched by upload order (best-effort).
     if (Array.isArray(project.photoCaptions) && project.photoCaptions.length > 0) {
         const captionFields = page.locator(
             'input[placeholder*="caption" i], textarea[placeholder*="caption" i]',
@@ -512,10 +493,17 @@ async function createProject(page, project, input, runTmpDir, index) {
             throw new Error('Lost the login session while creating the project. Re-run with fresh cookies.');
         }
 
-        // 3. Attach the photos to the upload control.
-        const fileInput = page.locator('input[type="file"]').first();
-        await fileInput.waitFor({ timeout: 30000 });
-        await fileInput.setInputFiles(localPaths);
+        // 3. Attach the photos to the upload control. The page uses a Dropzone.js
+        // widget (#hz-dropzone) whose file input is hidden by design, so wait for
+        // attachment rather than visibility; fall back to the standalone input.
+        let fileInput = page.locator('#hz-dropzone input[type="file"]');
+        if ((await fileInput.count()) === 0) {
+            fileInput = page.locator('input[type="file"]');
+        }
+        const uploadInput = fileInput.first();
+        await uploadInput.waitFor({ state: 'attached', timeout: 20000 });
+        await uploadInput.evaluate((el) => el.setAttribute('multiple', 'multiple'));
+        await uploadInput.setInputFiles(localPaths);
         result.photosUploaded = localPaths.length;
         log.info(`"${label}": attached ${localPaths.length} photo(s), waiting for upload…`);
         // Give Houzz time to process the uploads; the details form is usually
@@ -531,9 +519,8 @@ async function createProject(page, project, input, runTmpDir, index) {
             await saveDebugScreenshot(page, `dryrun-project-${index}.png`);
             result.status = 'dry-run';
         } else {
-            const publishButton = page
-                .getByRole('button', { name: /publish|save|add project|done|create/i })
-                .last();
+            // The form's submit control is <input id="submitBtn" type="button" value="Upload">.
+            const publishButton = page.locator('#submitBtn');
             await publishButton.waitFor({ timeout: 20000 });
             await publishButton.click();
             await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
