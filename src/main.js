@@ -625,8 +625,15 @@ if (customProxyUrls.length > 0) {
         log.info('Browser traffic will be routed through the custom proxy URLs.');
     }
 } else if (proxyGroups.length > 0) {
-    log.info(`Creating Apify Proxy configuration (groups: ${proxyGroups.join(', ')})…`);
-    const proxyConfiguration = await Actor.createProxyConfiguration({ groups: proxyGroups });
+    const proxyCountry = (input.proxyCountry || 'US').trim() || undefined;
+    log.info(
+        `Creating Apify Proxy configuration (groups: ${proxyGroups.join(', ')}` +
+        `${proxyCountry ? `, country: ${proxyCountry}` : ''})…`,
+    );
+    const proxyConfiguration = await Actor.createProxyConfiguration({
+        groups: proxyGroups,
+        ...(proxyCountry ? { country: proxyCountry } : {}),
+    });
     proxyServer = await proxyConfiguration.newUrl();
     log.info('Browser traffic will be routed through Apify Proxy.');
 }
@@ -635,6 +642,17 @@ const browser = await chromium.launch({
     headless: input.headless !== false,
     ...(proxyServer ? { proxy: { server: proxyServer } } : {}),
 });
+// Self-test the proxy: report the exit IP so a dead proxy is obvious immediately.
+if (proxyServer) {
+    try {
+        const probe = await browser.newPage();
+        const resp = await probe.goto('https://api.ipify.org', { timeout: 20000 });
+        log.info(`Proxy exit IP: ${(await resp.text()).trim()}`);
+        await probe.close();
+    } catch (e) {
+        log.warning(`Proxy self-test failed (continuing anyway): ${e.message.split('\n')[0]}`);
+    }
+}
 const context = await browser.newContext({
     viewport: { width: 1366, height: 900 },
     locale: 'en-US',
