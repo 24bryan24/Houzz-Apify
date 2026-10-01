@@ -501,7 +501,28 @@ async function createProject(page, project, input, runTmpDir, index) {
             fileInput = page.locator('input[type="file"]');
         }
         const uploadInput = fileInput.first();
-        await uploadInput.waitFor({ state: 'attached', timeout: 20000 });
+        try {
+            await uploadInput.waitFor({ state: 'attached', timeout: 20000 });
+        } catch {
+            const diag = {
+                title: await page.title().catch(() => ''),
+                url: page.url(),
+                fileInputs: await page.locator('input[type="file"]').count(),
+                dropzone: await page.locator('#hz-dropzone').count(),
+                uploadFlds: await page.locator('#uploadPhotosFlds').count(),
+                projectSelect: await page.locator('#projectSelect').count(),
+                bodyStart: (await page
+                    .locator('body')
+                    .innerText()
+                    .catch(() => '')
+                ).slice(0, 300).replace(/\s+/g, ' '),
+            };
+            log.error(`Upload diagnostics: ${JSON.stringify(diag)}`);
+            throw new Error(
+                'No file input found on the Add Project page (see upload diagnostics in the log ' +
+                'and the failed-project screenshot). The page variant may differ from the calibrated HTML.',
+            );
+        }
         await uploadInput.evaluate((el) => el.setAttribute('multiple', 'multiple'));
         await uploadInput.setInputFiles(localPaths);
         result.photosUploaded = localPaths.length;
