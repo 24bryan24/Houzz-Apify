@@ -119,6 +119,7 @@ Houzz changes its pages over time. The actor deliberately uses resilient text/ro
 - Apify's synchronous-run API caps at ~300s — another reason to use the async Make pattern for big batches.
 - Keep `delayBetweenProjectsMs` at 4000+ ms; uploading too fast can get the session throttled by Houzz.
 - `maxPhotosPerProject` caps at 20 to keep runs fast.
+- **Static residential proxy (required if Houzz 403s):** Houzz's edge servers block Apify's datacenter IPs on the login and upload endpoints — even with a valid session. Route the actor through a static residential IP: buy one from a proxy provider (HTTP(S), `http://user:pass@host:port` format, US location), then save the full URL as the secret env var `CUSTOM_PROXY_URL` on the actor (Settings → Environment variables, marked secret). The actor uses it verbatim for all browser traffic. (`proxyGroups: ["RESIDENTIAL"]` was tried 2026-10-01 — Apify's rotating residential pool hung on every Houzz request, so it is not recommended.)
 
 ## Troubleshooting
 
@@ -130,6 +131,7 @@ Houzz changes its pages over time. The actor deliberately uses resilient text/ro
 | `None of the photo URLs could be downloaded` | Links need login or aren't direct files | Use public/direct links (`uc?export=download&id=…` for Drive) and open one in an incognito window to test |
 | A field wasn't found (`waiting for…` timeout) | Houzz changed the form | See "Calibration notes" — dry-run + screenshot, then adjust the locator |
 | Make module times out | Batch too large for sync mode | Use the async pattern (Run synchronously OFF + Watch Actor Runs) |
+| `403 Not Allowed` on Houzz pages | Houzz blocking the actor's datacenter IP | Set the `CUSTOM_PROXY_URL` secret env var to a static residential proxy (see "Cost & limits"); the actor fails fast with a clear message instead of timing out |
 
 ## Files
 
